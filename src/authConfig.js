@@ -5,8 +5,8 @@ export const msalConfig = {
   auth: {
     clientId: import.meta.env.VITE_CLIENT_ID,
     authority: `https://login.microsoftonline.com/${import.meta.env.VITE_TENANT_ID}`,
-    redirectUri: window.location.origin,
-    postLogoutRedirectUri: window.location.origin,
+    redirectUri: window.location.href.split('?')[0].split('#')[0],
+    postLogoutRedirectUri : window.location.href.split('?')[0].split('#')[0],
   },
   cache: {
     // sessionStorage clears on tab close; use localStorage for persistent login
