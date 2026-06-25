@@ -1,161 +1,215 @@
-// src/graphService.js
+// src/graphService.js — CSV file version
+// Reads/writes "Portfolio Strategy Data.csv" in SharePoint Documents
+// Avoids SharePoint list write permission issues
+
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const SP_HOST = "adobe.sharepoint.com";
 const SP_PATH = "/sites/Monitor_SP";
-const LIST_NAME = "portfolio strategy data temp";
+const CSV_FILENAME = "Portfolio Strategy Data.csv";
 
 let _siteId = null;
-let _listId = null;
-let _fieldMap = null;
 
 async function gFetch(url, token, opts = {}) {
   const res = await fetch(url, {
     ...opts,
     headers: {
       Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
       ...(opts.headers || {}),
     },
   });
   if (res.status === 204) return null;
-  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = body?.error?.message || body?.error?.code || `HTTP ${res.status}`;
-    throw new Error(`Graph API error: ${msg}`);
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error?.message || `HTTP ${res.status}`);
   }
-  return body;
+  return res;
 }
 
 async function getSiteId(token) {
   if (_siteId) return _siteId;
-  const d = await gFetch(`${GRAPH}/sites/${SP_HOST}:${SP_PATH}`, token);
+  const res = await gFetch(`${GRAPH}/sites/${SP_HOST}:${SP_PATH}`, token);
+  const d = await res.json();
   _siteId = d.id;
   return _siteId;
 }
 
-// Expose for diagnostics
-export async function getAllLists(token) {
-  const siteId = await getSiteId(token);
-  const d = await gFetch(`${GRAPH}/sites/${siteId}/lists`, token);
-  return d.value || [];
-}
-
-async function getListId(token) {
-  if (_listId) return _listId;
-  const siteId = await getSiteId(token);
-
-  // Try fetching all lists and find by name (case-insensitive)
-  const allLists = await getAllLists(token);
-  const match = allLists.find(
-    (l) => l.displayName?.toLowerCase() === LIST_NAME.toLowerCase() ||
-           l.name?.toLowerCase() === LIST_NAME.toLowerCase()
-  );
-
-  if (!match) {
-    const names = allLists.map((l) => `"${l.displayName}"`).join(", ");
-    throw new Error(
-      `List "${LIST_NAME}" not found on this site.\n\nAvailable lists: ${names}`
-    );
+function parseCSVRow(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (c === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += c;
+    }
   }
-
-  _listId = match.id;
-  return _listId;
+  result.push(current.trim());
+  return result;
 }
 
-async function getFieldMap(token) {
-  if (_fieldMap) return _fieldMap;
+function escapeCSV(val) {
+  if (val === null || val === undefined) return "";
+  const s = String(val);
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function findHeader(headers, ...candidates) {
+  for (const c of candidates) {
+    const m = headers.find(
+      (h) => h.toLowerCase() === c.toLowerCase() ||
+             h.toLowerCase().replace(/\s/g, "") === c.toLowerCase().replace(/\s/g, "")
+    );
+    if (m) return m;
+  }
+  return candidates[0];
+}
+
+function toDateStr(v) {
+  if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(v)) {
+    const [m, d, y] = v.split("/");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  return v || null;
+}
+
+function decodeRow(row, headers, index) {
+  const H = {
+    id:   findHeader(headers, "id", "ID"),
+    site: findHeader(headers, "title", "site", "Site"),
+    cat:  findHeader(headers, "category", "Category"),
+    led:  findHeader(headers, "led", "LED"),
+    brk:  findHeader(headers, "break", "Break"),
+    cap:  findHeader(headers, "capital project", "CapitalProject"),
+    own:  findHeader(headers, "owned", "Owned"),
+    note: findHeader(headers, "notes", "Notes"),
+  };
+  const owned = (row[H.own] || "").toLowerCase();
+  return {
+    id: row[H.id] || String(index),
+    Site: row[H.site] || "",
+    Category: row[H.cat] || "",
+    LED: toDateStr(row[H.led]),
+    Break: toDateStr(row[H.brk]),
+    CapitalProject: row[H.cap] || null,
+    Owned: owned === "yes" || owned === "true" || owned === "1",
+    Notes: row[H.note] || "",
+  };
+}
+
+function applyForm(row, headers, form) {
+  const H = {
+    site: findHeader(headers, "title", "site", "Site"),
+    cat:  findHeader(headers, "category", "Category"),
+    led:  findHeader(headers, "led", "LED"),
+    brk:  findHeader(headers, "break", "Break"),
+    cap:  findHeader(headers, "capital project", "CapitalProject"),
+    own:  findHeader(headers, "owned", "Owned"),
+    note: findHeader(headers, "notes", "Notes"),
+  };
+  return {
+    ...row,
+    [H.site]: form.Site || "",
+    [H.cat]:  form.Category || "",
+    [H.led]:  form.LED || "",
+    [H.brk]:  form.Break || "",
+    [H.cap]:  form.CapitalProject || "",
+    [H.own]:  form.Owned ? "Yes" : "No",
+    [H.note]: form.Notes || "",
+  };
+}
+
+async function readCSVText(token) {
   const siteId = await getSiteId(token);
-  const listId = await getListId(token);
-  const d = await gFetch(`${GRAPH}/sites/${siteId}/lists/${listId}/columns`, token);
-  const map = {};
-  (d.value || []).forEach((col) => {
-    if (col.displayName) map[col.displayName.toLowerCase()] = col.name;
+  const res = await gFetch(
+    `${GRAPH}/sites/${siteId}/drive/root:/${encodeURIComponent(CSV_FILENAME)}:/content`,
+    token
+  );
+  return res.text();
+}
+
+async function writeCSVText(token, text) {
+  const siteId = await getSiteId(token);
+  await gFetch(
+    `${GRAPH}/sites/${siteId}/drive/root:/${encodeURIComponent(CSV_FILENAME)}:/content`,
+    token,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+      body: text,
+    }
+  );
+}
+
+function parseCSV(text) {
+  const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim());
+  if (!lines.length) return { headers: [], rows: [], items: [] };
+  const headers = parseCSVRow(lines[0]);
+  const rows = [];
+  const items = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCSVRow(lines[i]);
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = values[idx] ?? ""; });
+    rows.push(row);
+    items.push(decodeRow(row, headers, i));
+  }
+  return { headers, rows, items };
+}
+
+function serializeCSV(headers, rows) {
+  const lines = [headers.join(",")];
+  rows.forEach((row) => {
+    lines.push(headers.map((h) => escapeCSV(row[h])).join(","));
   });
-  _fieldMap = map;
-  return _fieldMap;
-}
-
-function decodeItem(rawFields, itemId, fieldMap) {
-  const f = rawFields || {};
-  const get = (...names) => {
-    for (const n of names) {
-      const internalName = fieldMap[n.toLowerCase()] || n;
-      if (f[internalName] !== undefined && f[internalName] !== null) return f[internalName];
-      if (f[n] !== undefined && f[n] !== null) return f[n];
-    }
-    return null;
-  };
-  return {
-    id: itemId,
-    Site: get("title", "Title", "Site"),
-    Category: get("category", "Category"),
-    LED: get("led", "LED"),
-    Break: get("break", "Break"),
-    CapitalProject: get("capital project", "Capital Project", "Capital_x0020_Project", "CapitalProject"),
-    Owned: Boolean(get("owned", "Owned")),
-    Notes: get("notes", "Notes") || "",
-  };
-}
-
-function encodeFields(form, fieldMap) {
-  const toISO = (d) => (d ? `${d}T00:00:00Z` : null);
-  const resolve = (...names) => {
-    for (const n of names) {
-      if (fieldMap[n.toLowerCase()]) return fieldMap[n.toLowerCase()];
-    }
-    return names[0];
-  };
-  return {
-    [resolve("title", "Title")]: form.Site,
-    [resolve("category", "Category")]: form.Category || null,
-    [resolve("led", "LED")]: toISO(form.LED),
-    [resolve("break", "Break")]: toISO(form.Break),
-    [resolve("capital project", "Capital Project", "Capital_x0020_Project")]: form.CapitalProject || null,
-    [resolve("owned", "Owned")]: form.Owned,
-    [resolve("notes", "Notes")]: form.Notes || null,
-  };
+  return lines.join("\n");
 }
 
 export async function fetchAllItems(token) {
-  const siteId = await getSiteId(token);
-  const listId = await getListId(token);
-  const fieldMap = await getFieldMap(token);
-  const items = [];
-  let url = `${GRAPH}/sites/${siteId}/lists/${listId}/items?expand=fields&$top=999`;
-  while (url) {
-    const d = await gFetch(url, token);
-    (d.value || []).forEach((raw) => {
-      items.push(decodeItem(raw.fields, raw.id, fieldMap));
-    });
-    url = d["@odata.nextLink"] || null;
-  }
+  const text = await readCSVText(token);
+  const { items } = parseCSV(text);
   return items;
 }
 
 export async function updateItem(token, itemId, form) {
-  const siteId = await getSiteId(token);
-  const listId = await getListId(token);
-  const fieldMap = await getFieldMap(token);
-  await gFetch(`${GRAPH}/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, token,
-    { method: "PATCH", body: JSON.stringify(encodeFields(form, fieldMap)) });
+  const text = await readCSVText(token);
+  const { headers, rows, items } = parseCSV(text);
+  const idx = items.findIndex((it) => String(it.id) === String(itemId));
+  if (idx === -1) throw new Error(`Item ${itemId} not found in CSV`);
+  rows[idx] = applyForm(rows[idx], headers, form);
+  await writeCSVText(token, serializeCSV(headers, rows));
 }
 
 export async function createItem(token, form) {
-  const siteId = await getSiteId(token);
-  const listId = await getListId(token);
-  const fieldMap = await getFieldMap(token);
-  const d = await gFetch(`${GRAPH}/sites/${siteId}/lists/${listId}/items`, token,
-    { method: "POST", body: JSON.stringify({ fields: encodeFields(form, fieldMap) }) });
-  return d.id;
+  const text = await readCSVText(token);
+  const { headers, rows, items } = parseCSV(text);
+  const idHeader = findHeader(headers, "id", "ID");
+  const maxId = items.reduce((m, it) => Math.max(m, parseInt(it.id) || 0), 0);
+  const newId = String(maxId + 1);
+  const newRow = {};
+  headers.forEach((h) => { newRow[h] = ""; });
+  const filled = applyForm(newRow, headers, form);
+  filled[idHeader] = newId;
+  rows.push(filled);
+  await writeCSVText(token, serializeCSV(headers, rows));
+  return newId;
 }
 
 export async function deleteItem(token, itemId) {
-  const siteId = await getSiteId(token);
-  const listId = await getListId(token);
-  await gFetch(`${GRAPH}/sites/${siteId}/lists/${listId}/items/${itemId}`, token,
-    { method: "DELETE" });
-}
-
-export async function getDebugFieldMap(token) {
-  return getFieldMap(token);
+  const text = await readCSVText(token);
+  const { headers, rows, items } = parseCSV(text);
+  const idx = items.findIndex((it) => String(it.id) === String(itemId));
+  if (idx === -1) throw new Error(`Item ${itemId} not found`);
+  rows.splice(idx, 1);
+  await writeCSVText(token, serializeCSV(headers, rows));
 }
