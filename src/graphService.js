@@ -83,7 +83,34 @@ function toDateStr(v) {
   return v || null;
 }
 
-function decodeRow(row, headers, index) {
+// Ensures every row has a permanent, unique ID (written into the CSV) so
+// items can be reliably matched for edit/delete regardless of row order —
+// previously rows without an ID fell back to their line position, which
+// shifts whenever an earlier row is added or removed, causing edit/delete
+// to silently target the wrong row.
+function ensureStableIds(headers, rows) {
+  let idHeader = headers.find((h) => h.toLowerCase() === "id");
+  if (!idHeader) {
+    idHeader = "ID";
+    headers.push(idHeader);
+  }
+  let maxId = 0;
+  rows.forEach((r) => {
+    const n = parseInt(r[idHeader], 10);
+    if (!isNaN(n)) maxId = Math.max(maxId, n);
+  });
+  let changed = false;
+  rows.forEach((r) => {
+    if (!r[idHeader]) {
+      maxId += 1;
+      r[idHeader] = String(maxId);
+      changed = true;
+    }
+  });
+  return { idHeader, changed };
+}
+
+function decodeRow(row, headers) {
   const H = {
     id:   findHeader(headers, "id", "ID"),
     site: findHeader(headers, "title", "site", "Site"),
@@ -96,7 +123,7 @@ function decodeRow(row, headers, index) {
   };
   const owned = (row[H.own] || "").toLowerCase();
   return {
-    id: row[H.id] || String(index),
+    id: row[H.id],
     Site: row[H.site] || "",
     Category: row[H.cat] || "",
     LED: toDateStr(row[H.led]),
@@ -153,18 +180,16 @@ async function writeCSVText(token, text) {
 
 function parseCSV(text) {
   const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim());
-  if (!lines.length) return { headers: [], rows: [], items: [] };
+  if (!lines.length) return { headers: [], rows: [] };
   const headers = parseCSVRow(lines[0]);
   const rows = [];
-  const items = [];
   for (let i = 1; i < lines.length; i++) {
     const values = parseCSVRow(lines[i]);
     const row = {};
     headers.forEach((h, idx) => { row[h] = values[idx] ?? ""; });
     rows.push(row);
-    items.push(decodeRow(row, headers, i));
   }
-  return { headers, rows, items };
+  return { headers, rows };
 }
 
 function serializeCSV(headers, rows) {
@@ -175,26 +200,34 @@ function serializeCSV(headers, rows) {
   return lines.join("\n");
 }
 
-export async function fetchAllItems(token) {
+// Reads + parses the CSV and persists any newly backfilled IDs immediately,
+// so every caller (including concurrent tabs) converges on the same IDs.
+async function loadRows(token) {
   const text = await readCSVText(token);
-  const { items } = parseCSV(text);
-  return items;
+  const { headers, rows } = parseCSV(text);
+  const { changed } = ensureStableIds(headers, rows);
+  if (changed) await writeCSVText(token, serializeCSV(headers, rows));
+  return { headers, rows };
+}
+
+export async function fetchAllItems(token) {
+  const { headers, rows } = await loadRows(token);
+  return rows.map((row) => decodeRow(row, headers));
 }
 
 export async function updateItem(token, itemId, form) {
-  const text = await readCSVText(token);
-  const { headers, rows, items } = parseCSV(text);
-  const idx = items.findIndex((it) => String(it.id) === String(itemId));
+  const { headers, rows } = await loadRows(token);
+  const idHeader = findHeader(headers, "id", "ID");
+  const idx = rows.findIndex((r) => String(r[idHeader]) === String(itemId));
   if (idx === -1) throw new Error(`Item ${itemId} not found in CSV`);
   rows[idx] = applyForm(rows[idx], headers, form);
   await writeCSVText(token, serializeCSV(headers, rows));
 }
 
 export async function createItem(token, form) {
-  const text = await readCSVText(token);
-  const { headers, rows, items } = parseCSV(text);
+  const { headers, rows } = await loadRows(token);
   const idHeader = findHeader(headers, "id", "ID");
-  const maxId = items.reduce((m, it) => Math.max(m, parseInt(it.id) || 0), 0);
+  const maxId = rows.reduce((m, r) => Math.max(m, parseInt(r[idHeader], 10) || 0), 0);
   const newId = String(maxId + 1);
   const newRow = {};
   headers.forEach((h) => { newRow[h] = ""; });
@@ -206,9 +239,9 @@ export async function createItem(token, form) {
 }
 
 export async function deleteItem(token, itemId) {
-  const text = await readCSVText(token);
-  const { headers, rows, items } = parseCSV(text);
-  const idx = items.findIndex((it) => String(it.id) === String(itemId));
+  const { headers, rows } = await loadRows(token);
+  const idHeader = findHeader(headers, "id", "ID");
+  const idx = rows.findIndex((r) => String(r[idHeader]) === String(itemId));
   if (idx === -1) throw new Error(`Item ${itemId} not found`);
   rows.splice(idx, 1);
   await writeCSVText(token, serializeCSV(headers, rows));

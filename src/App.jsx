@@ -20,12 +20,7 @@ const yearColor = (d) => {
   const y = new Date(d).getFullYear();
   return YEAR_COLORS[y] || (y <= 2026 ? "#a8d08d" : "#7030a0");
 };
-const cardBg = (item) => {
-  if (item.Owned) return "#c00000";
-  if (item.CapitalProject === "Active") return "#ffc000";
-  if (item.CapitalProject === "Potential/Future") return "#ff92d0";
-  return yearColor(item.Break || item.LED);
-};
+const cardBg = (item) => item.Owned ? "#c00000" : yearColor(item.Break || item.LED);
 const isLight = (hex) => {
   if (!hex || hex[0] !== "#") return true;
   const r = parseInt(hex.slice(1, 3), 16) * 299;
@@ -78,10 +73,22 @@ const ALL_CATS = [
   "Potential Service Office",
 ];
 
+const CARD_W = 200; // fixed card column width, shared across all sections
+
+const sortByNextBreak = (arr) => [...arr].sort((a, b) => {
+  const aOwned = !!a.Owned, bOwned = !!b.Owned;
+  if (aOwned !== bOwned) return aOwned ? 1 : -1;
+  const dateA = a.Break || a.LED;
+  const dateB = b.Break || b.LED;
+  const da = dateA ? new Date(dateA).getTime() : Infinity;
+  const db = dateB ? new Date(dateB).getTime() : Infinity;
+  return da - db;
+});
+
 // ── Shared style tokens ────────────────────────────────────────────────────────
 const HDR = {
   background: "#1a1a2e", color: "#fff", textAlign: "center",
-  padding: "5px 4px", fontWeight: 700, fontSize: "11px",
+  padding: "7px 6px", fontWeight: 700, fontSize: "14px",
   marginBottom: "2px", letterSpacing: "0.02em",
 };
 const ADD_BTN = {
@@ -102,22 +109,29 @@ function Card({ item, editMode, onClick }) {
       onMouseLeave={() => setHovered(false)}
       style={{
         background: bg, color: col, padding: "3px 6px", marginBottom: "2px",
-        fontSize: "10.5px", lineHeight: 1.35,
+        fontSize: "14px", lineHeight: 1.35,
         cursor: editMode ? "pointer" : "default",
         opacity: editMode && hovered ? 0.82 : 1,
         outline: editMode ? "1px dashed rgba(0,0,0,0.18)" : "none",
         transition: "opacity 0.1s", position: "relative",
+        height: "49px", overflow: "hidden", boxSizing: "border-box",
       }}
     >
       <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", paddingRight: editMode ? 14 : 0 }}>
         {item.Site}
       </div>
-      <div style={{ fontSize: "9.5px", opacity: 0.88 }}>
+      <div style={{ fontSize: "12px", opacity: 0.88, marginTop: "3px" }}>
         {item.Break ? `Break:${fmtDate(item.Break)} ` : ""}
         {item.LED ? `LED:${fmtDate(item.LED)}` : ""}
       </div>
       {editMode && hovered && (
         <span style={{ position: "absolute", top: 3, right: 4, fontSize: "9px", opacity: 0.7 }}>✎</span>
+      )}
+      {item.CapitalProject === "Active" && (
+        <div style={{ position: "absolute", top: 0, right: 0, width: 0, height: 0, borderStyle: "solid", borderWidth: "0 18px 18px 0", borderColor: "transparent #ffc000 transparent transparent" }} />
+      )}
+      {item.CapitalProject === "Potential/Future" && (
+        <div style={{ position: "absolute", top: 0, right: 0, width: 0, height: 0, borderStyle: "solid", borderWidth: "0 18px 18px 0", borderColor: "transparent #ff92d0 transparent transparent" }} />
       )}
     </div>
   );
@@ -131,11 +145,11 @@ function ColSection({ label, items, cols, editMode, onEdit, onAdd }) {
   }, [items, cols]);
 
   return (
-    <div style={{ flex: cols, minWidth: 0 }}>
+    <div style={{ flexShrink: 0, width: cols * CARD_W + (cols - 1) * 2 }}>
       <div style={HDR}>{label}</div>
       <div style={{ display: "flex", gap: "2px" }}>
         {chunks.map((chunk, ci) => (
-          <div key={ci} style={{ flex: 1, minWidth: 0 }}>
+          <div key={ci} style={{ width: CARD_W, flexShrink: 0 }}>
             {chunk.map((i) => <Card key={i.id} item={i} editMode={editMode} onClick={onEdit} />)}
           </div>
         ))}
@@ -239,27 +253,31 @@ function EditModal({ item, defaultCat, saving, onSave, onClose, onDelete }) {
 
 // ── Legend ─────────────────────────────────────────────────────────────────────
 function Legend() {
-  const sw = (c) => <span style={{ display: "inline-block", width: 11, height: 11, background: c, marginRight: 3, verticalAlign: "middle" }} />;
+  const solidSwatch = (c) => (
+    <span style={{ display: "inline-block", width: 17, height: 17, background: c, marginRight: 6, verticalAlign: "middle", border: "1px solid rgba(0,0,0,0.12)", flexShrink: 0 }} />
+  );
+  const triangleSwatch = (c) => (
+    <span style={{ display: "inline-block", width: 0, height: 0, borderStyle: "solid", borderWidth: "0 17px 17px 0", borderColor: `transparent ${c} transparent transparent`, marginRight: 6, verticalAlign: "middle", flexShrink: 0 }} />
+  );
+  const YEARS = [["2026","#a8d08d"],["2027","#548235"],["2028","#4472c4"],["2029","#203864"],["2030+","#7030a0"]];
+  const rowStyle = { display: "flex", alignItems: "center", marginBottom: "4px", fontSize: "14px" };
+  const labelStyle = { fontWeight: 700, fontSize: "16px", marginBottom: "6px" };
+
   return (
     <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
-      <div style={{ border: "1px solid #ccc", padding: "7px 12px", display: "inline-flex", gap: "18px", fontSize: "9.5px", flexWrap: "wrap" }}>
+      <div style={{ border: "1px solid #ccc", padding: "10px 17px", display: "inline-grid", gridTemplateColumns: "auto auto", gap: "0 24px" }}>
         <div>
-          <strong>Next Break:</strong>
-          <div style={{ display: "flex", gap: "8px", marginTop: "3px" }}>
-            {[["2026","#a8d08d"],["2027","#548235"],["2028","#4472c4"],["2029","#203864"],["2030+","#7030a0"]].map(([y,c]) => (
-              <span key={y}>{sw(c)}{y}</span>
-            ))}
-          </div>
+          <div style={labelStyle}>Next Break:</div>
+          {YEARS.map(([y, c]) => (
+            <div key={y} style={rowStyle}>{solidSwatch(c)}{y}</div>
+          ))}
         </div>
         <div>
-          <strong>Owned:</strong>
-          <div style={{ marginTop: "3px" }}>{sw("#c00000")}Owned</div>
-        </div>
-        <div>
-          <strong>Capital Project:</strong>
-          <div style={{ display: "flex", gap: "8px", marginTop: "3px" }}>
-            {[["Active","#ffc000"],["Potential/Future","#ff92d0"]].map(([l,c]) => <span key={l}>{sw(c)}{l}</span>)}
-          </div>
+          <div style={labelStyle}>Owned:</div>
+          <div style={{ ...rowStyle, marginBottom: "12px" }}>{solidSwatch("#c00000")}Owned</div>
+          <div style={labelStyle}>Capital Project:</div>
+          <div style={rowStyle}>{triangleSwatch("#ffc000")}Active</div>
+          <div style={rowStyle}>{triangleSwatch("#ff92d0")}Potential/Future</div>
         </div>
       </div>
     </div>
@@ -271,7 +289,7 @@ function SignInScreen({ onSignIn }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: "#f5f5f5" }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "40px 48px", boxShadow: "0 8px 32px rgba(0,0,0,0.12)", textAlign: "center", maxWidth: 400 }}>
-        <div style={{ fontSize: "32px", color: "#c00000", marginBottom: "8px" }}>△</div>
+        <img src="/portfolio-strategy-status/Adobe_icon_RGB_red.png" alt="Adobe" style={{ height: "32px", marginBottom: "8px" }} />
         <h1 style={{ color: "#c00000", fontSize: "20px", margin: "0 0 6px" }}>Portfolio Strategy Overview</h1>
         <p style={{ color: "#666", fontSize: "12px", marginBottom: "28px" }}>Sign in with your Adobe Microsoft account to access the dashboard.</p>
         <button onClick={onSignIn}
@@ -297,6 +315,10 @@ function PortfolioReport() {
   const [defCat, setDefCat] = useState("");
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState({ msg: "", ok: true });
+  const [zoom, setZoom] = useState(1);
+  const zoomIn  = () => setZoom(z => Math.min(2.0, +(z + 0.25).toFixed(2)));
+  const zoomOut = () => setZoom(z => Math.max(0.75, +(z - 0.25).toFixed(2)));
+  const zoomReset = () => setZoom(1);
 
   const userEmail = account?.username?.toLowerCase() || "";
   const canEdit = EDITOR_EMAILS.length === 0 || EDITOR_EMAILS.includes(userEmail);
@@ -383,6 +405,7 @@ function PortfolioReport() {
   const g = useMemo(() => {
     const groups = { closure:[], optim:[], potclos:[], active:[], reloc:[], service:[], potservice:[] };
     items.forEach((i) => { const k = groupKey(i.Category); if (groups[k]) groups[k].push(i); });
+    Object.keys(groups).forEach((k) => { groups[k] = sortByNextBreak(groups[k]); });
     return groups;
   }, [items]);
 
@@ -413,15 +436,15 @@ function PortfolioReport() {
 
   return (
     <div style={{ overflowX: "auto", minHeight: "100vh" }}>
-      <div style={{ minWidth: "960px", padding: "8px 10px 20px" }}>
+      <div style={{ minWidth: "960px", maxWidth: "1800px", margin: "0 auto", padding: "8px 10px 20px", zoom: zoom }}>
 
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "6px" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: "20px", color: "#c00000", display: "flex", alignItems: "center", gap: "7px" }}>
-              <span style={{ fontSize: "22px" }}>△</span> Portfolio Strategy Overview
+            <h1 style={{ margin: 0, fontSize: "30px", color: "#c00000", display: "flex", alignItems: "center", gap: "7px" }}>
+              <img src="/portfolio-strategy-status/Adobe_icon_RGB_red.png" alt="Adobe" style={{ height: "24px", verticalAlign: "middle" }} /> Portfolio Strategy Overview
             </h1>
-            <div style={{ fontSize: "10px", color: "#666", marginTop: "1px" }}>
+            <div style={{ fontSize: "15px", fontWeight: 700, color: "#666", marginTop: "1px" }}>
               By Type and Year&nbsp;|&nbsp;{items.length} sites&nbsp;|&nbsp;Signed in as {account?.name || userEmail}
             </div>
           </div>
@@ -437,6 +460,15 @@ function PortfolioReport() {
               style={{ padding: "5px 14px", background: "#7030a0", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "11px", fontWeight: 700 }}>
               ▶ Refresh
             </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <button onClick={zoomOut} disabled={zoom <= 0.75} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#555", lineHeight: 1, padding: "0 2px" }}>−</button>
+              <input type="range" min={0.75} max={2.0} step={0.25} value={zoom}
+                onChange={e => setZoom(parseFloat(e.target.value))}
+                style={{ width: "80px", cursor: "pointer", accentColor: "#555" }}
+              />
+              <button onClick={zoomIn} disabled={zoom >= 2.0} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#555", lineHeight: 1, padding: "0 2px" }}>+</button>
+              <span onDoubleClick={zoomReset} title="Double-click to reset" style={{ fontSize: "10px", color: "#555", minWidth: "30px", cursor: "default", userSelect: "none" }}>{Math.round(zoom * 100)}%</span>
+            </div>
             <button onClick={() => instance.logoutPopup()}
               style={{ padding: "5px 10px", background: "transparent", color: "#888", border: "1px solid #ddd", borderRadius: "4px", cursor: "pointer", fontSize: "10px" }}>
               Sign out
@@ -451,8 +483,8 @@ function PortfolioReport() {
         )}
 
         {/* Main grid */}
-        <div style={{ display: "flex", gap: "3px", alignItems: "flex-start" }}>
-          <div style={{ width: "148px", flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+          <div style={{ width: CARD_W, flexShrink: 0 }}>
             <SideSection label="Office Closures" items={g.closure} editMode={editMode} onEdit={openEdit} onAdd={openAdd} />
             <SideSection label="Optimization Opps" items={g.optim} editMode={editMode} onEdit={openEdit} onAdd={openAdd} />
             <SideSection label="Potential Closures" items={g.potclos} editMode={editMode} onEdit={openEdit} onAdd={openAdd} />
